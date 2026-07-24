@@ -8,22 +8,20 @@
     "build": "tsc && vite build",
     "preview": "wrangler pages dev dist",
     "test": "vitest run",
-    "deploy": "wrangler pages deploy dist --project-name=page-pulse"
+    "deploy": "wrangler pages deploy dist --project-name=page-pulse-app --branch=main --commit-dirty=true"
   },
   "dependencies": {
-    "cheerio": "^1.0.0",
-    "lucide-react": "^1.26.0"
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "cheerio": "^1.0.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.5.0",
     "@cloudflare/workers-types": "^4.20240320.0",
-    "@types/cheerio": "^0.22.35",
     "@types/node": "^20.11.0",
     "@types/react": "^18.2.48",
     "@types/react-dom": "^18.2.15",
     "@vitejs/plugin-react": "^4.2.1",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
     "typescript": "^5.3.3",
     "vite": "^5.0.12",
     "vitest": "^2.0.0",

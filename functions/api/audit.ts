@@ -1,117 +1,191 @@
-/// <reference types="@cloudflare/workers-types" />
-import * as cheerio from "cheerio";
+import * as cheerio from 'cheerio'
 
-interface AuditSuccessResponse {
-  url: string;
-  httpStatus: number;
-  responseTimeMs: number;
-  title: string | null;
-  metaDescription: string | null;
-  h1Count: number;
-  imagesMissingAlt: number;
-  wordCount: number;
+interface AuditRequest {
+  url: string
 }
 
-interface AuditErrorResponse {
-  error: string;
+interface AuditResult {
+  url: string
+  httpStatus: number
+  responseTimeMs: number
+  title: string | null
+  metaDescription: string | null
+  h1Count: number
+  imagesMissingAlt: number
+  wordCount: number
 }
 
-export const onRequestPost: PagesFunction = async (context) => {
+interface ErrorResponse {
+  error: string
+}
+
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PagePulseAuditor/1.0'
+const TIMEOUT_MS = 8500
+
+function isValidHttpUrl(urlString: string): boolean {
   try {
-    const body = (await context.request.json()) as { url?: string };
-    const rawUrl = body?.url?.trim();
+    const url = new URL(urlString)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
 
-    if (!rawUrl) {
-      return jsonResponse({ error: "URL is required" }, 400);
+function sanitizeUrl(url: string): string {
+  return url.trim()
+}
+
+function countWords(html: string): number {
+  const $ = cheerio.load(html)
+  
+  // Remove non-visible elements
+  $('head, script, style, noscript, svg, iframe').remove()
+  
+  // Get text from body
+  const text = $('body').text() || ''
+  
+  // Normalize whitespace and count words
+  const normalizedText = text.replace(/\s+/g, ' ').trim()
+  const words = normalizedText.split(/\s+/).filter(word => word.length > 0)
+  
+  return words.length
+}
+
+function countImagesMissingAlt(html: string): number {
+  const $ = cheerio.load(html)
+  let count = 0
+  
+  $('img').each((_, img) => {
+    const alt = $(img).attr('alt')
+    if (alt === undefined || alt === '') {
+      count++
     }
+  })
+  
+  return count
+}
 
-    // 1. Validate URL protocol and structure
-    let parsedUrl: URL;
+function countH1(html: string): number {
+  const $ = cheerio.load(html)
+  return $('h1').length
+}
+
+function extractTitle(html: string): string | null {
+  const $ = cheerio.load(html)
+  const title = $('title').text().trim()
+  return title || null
+}
+
+function extractMetaDescription(html: string): string | null {
+  const $ = cheerio.load(html)
+  const description = $('meta[name="description"]').attr('content')
+  return description?.trim() || null
+}
+
+export async function onRequestPost(context: { request: Request }): Promise<Response> {
+  try {
+    // Parse request body
+    let requestBody: AuditRequest
     try {
-      parsedUrl = new URL(rawUrl);
-      if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-        return jsonResponse({ error: "Invalid URL: Only HTTP and HTTPS protocols are supported" }, 400);
-      }
+      requestBody = await context.request.json() as AuditRequest
     } catch {
-      return jsonResponse({ error: "Invalid URL: Must be a well-formed HTTP or HTTPS address" }, 400);
+      return new Response(
+        JSON.stringify({ error: 'Invalid JSON in request body' } as ErrorResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      )
     }
 
-    // 2. Fetch target with 8.5 second timeout
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8500);
+    // Validate URL
+    const rawUrl = requestBody.url
+    if (!rawUrl || typeof rawUrl !== 'string') {
+      return new Response(
+        JSON.stringify({ error: 'Invalid URL: URL is required' } as ErrorResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
 
-    const startTime = performance.now();
-    let response: Response;
+    const url = sanitizeUrl(rawUrl)
+    if (!url) {
+      return new Response(
+        JSON.stringify({ error: 'Invalid URL: Must be a well-formed HTTP or HTTPS address' } as ErrorResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
+    if (!isValidHttpUrl(url)) {
+      return new Response(
+        JSON.stringify({ error: 'Invalid URL: Must be a well-formed HTTP or HTTPS address' } as ErrorResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
+    // Fetch with timeout
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS)
+
+    let response: Response
+    const startTime = performance.now()
+
     try {
-      response = await fetch(parsedUrl.toString(), {
+      response = await fetch(url, {
         signal: controller.signal,
         headers: {
-          "User-Agent": "PagePulseAuditBot/1.0 (+https://digitalheroesco.com)"
+          'User-Agent': USER_AGENT
         }
-      });
-    } catch (err: any) {
-      clearTimeout(timeoutId);
-      if (err.name === "AbortError") {
-        return jsonResponse({ error: "Audit request timed out after 8.5 seconds" }, 504);
+      })
+      clearTimeout(timeoutId)
+    } catch (error) {
+      clearTimeout(timeoutId)
+      
+      if (error instanceof Error && error.name === 'AbortError') {
+        return new Response(
+          JSON.stringify({ error: 'Audit request timed out after 8.5 seconds' } as ErrorResponse),
+          { status: 504, headers: { 'Content-Type': 'application/json' } }
+        )
       }
-      return jsonResponse({ error: `Failed to reach target host: ${err.message || "Network error"}` }, 502);
-    } finally {
-      clearTimeout(timeoutId);
+      
+      return new Response(
+        JSON.stringify({ error: `Failed to reach target host: ${error instanceof Error ? error.message : 'Unknown error'}` } as ErrorResponse),
+        { status: 502, headers: { 'Content-Type': 'application/json' } }
+      )
     }
 
-    const responseTimeMs = Math.round(performance.now() - startTime);
-    const httpStatus = response.status;
+    const responseTimeMs = Math.round(performance.now() - startTime)
 
-    // 3. Check Content-Type header
-    const contentType = response.headers.get("content-type") || "";
-    if (!contentType.toLowerCase().includes("text/html")) {
-      return jsonResponse({ error: `Not an HTML page (Content-Type is '${contentType || "unknown"}')` }, 415);
+    // Check Content-Type
+    const contentType = response.headers.get('content-type') || ''
+    if (!contentType.includes('text/html')) {
+      return new Response(
+        JSON.stringify({ error: `Not an HTML page (Content-Type is '${contentType}')` } as ErrorResponse),
+        { status: 415, headers: { 'Content-Type': 'application/json' } }
+      )
     }
 
-    // 4. Parse HTML content with Cheerio
-    const htmlText = await response.text();
-    const $ = cheerio.load(htmlText);
+    // Get HTML content (even for non-2xx status)
+    const html = await response.text()
 
-    // Document Metadata (extracted before element deletion)
-    const title = $("title").first().text().trim() || null;
-    const metaDescription = $('meta[name="description" i]').attr("content")?.trim() || null;
-    const h1Count = $("h1").length;
-
-    // Images missing alt attributes
-    let imagesMissingAlt = 0;
-    $("img").each((_, el) => {
-      const alt = $(el).attr("alt");
-      if (alt === undefined || alt.trim() === "") {
-        imagesMissingAlt++;
-      }
-    });
-
-    // Approximate visible Word Count (removes non-visible elements & head metadata)
-    $("head, script, style, noscript, svg, iframe").remove();
-    const visibleText = $("body").text().replace(/\s+/g, " ").trim();
-    const wordCount = visibleText ? visibleText.split(/\s+/).length : 0;
-
-    const result: AuditSuccessResponse = {
-      url: parsedUrl.toString(),
-      httpStatus,
+    // Extract metrics
+    const result: AuditResult = {
+      url,
+      httpStatus: response.status,
       responseTimeMs,
-      title,
-      metaDescription,
-      h1Count,
-      imagesMissingAlt,
-      wordCount
-    };
+      title: extractTitle(html),
+      metaDescription: extractMetaDescription(html),
+      h1Count: countH1(html),
+      imagesMissingAlt: countImagesMissingAlt(html),
+      wordCount: countWords(html)
+    }
 
-    return jsonResponse(result, 200);
+    return new Response(
+      JSON.stringify(result),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    )
 
-  } catch (err: any) {
-    return jsonResponse({ error: "An unexpected internal error occurred during audit processing" }, 500);
+  } catch (error) {
+    console.error('Unhandled error in audit:', error)
+    return new Response(
+      JSON.stringify({ error: 'Internal server error' } as ErrorResponse),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    )
   }
-};
-
-function jsonResponse(data: AuditSuccessResponse | AuditErrorResponse, status: number): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json" }
-  });
 }
