@@ -61,15 +61,16 @@ export default function App() {
       const res = await fetch("/api/audit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: url.trim() })
+        body: JSON.stringify({ url: url.trim() }),
       });
 
-      const data = await res.json();
+      // Type the JSON response explicitly so 'data.error' passes strict TypeScript checks
+      const data = (await res.json()) as { error?: string } & AuditReport;
 
       if (!res.ok || data.error) {
         setError(data.error || "An unknown error occurred during audit");
       } else {
-        setReport(data as AuditReport);
+        setReport(data);
       }
     } catch (err) {
       setError("Failed to communicate with audit server. Please check connection.");
